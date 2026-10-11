@@ -175,6 +175,10 @@ spec:
                 description: |-
                   ExtensionsUsed counts extensions granted so far. Establishing the initial
                   expiry window does not count as an extension.
+
+                  Deliberately not omitempty: "extended zero times" is real information and
+                  differs from "unknown". With omitempty the value is dropped from JSON and
+                  the EXT printer column renders blank instead of 0.
                 format: int32
                 type: integer
               lastActivityAt:

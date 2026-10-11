@@ -121,8 +121,12 @@ type WorkspaceSessionStatus struct {
 
 	// ExtensionsUsed counts extensions granted so far. Establishing the initial
 	// expiry window does not count as an extension.
+	//
+	// Deliberately not omitempty: "extended zero times" is real information and
+	// differs from "unknown". With omitempty the value is dropped from JSON and
+	// the EXT printer column renders blank instead of 0.
 	// +optional
-	ExtensionsUsed int32 `json:"extensionsUsed,omitempty"`
+	ExtensionsUsed int32 `json:"extensionsUsed"`
 
 	// Endpoint is the in-cluster address of the workspace Service.
 	// +optional
