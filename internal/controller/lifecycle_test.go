@@ -22,15 +22,15 @@ func defaultSpec() DecisionSpec {
 
 func TestDecide(t *testing.T) {
 	cases := []struct {
-		name         string
-		now          time.Time
-		createdAt    time.Time
-		spec         DecisionSpec
-		state        DecisionState
-		wantAction   Action
-		wantReason   string
-		wantExpiry   time.Time // zero means "do not check"
-		wantRequeue  time.Duration
+		name        string
+		now         time.Time
+		createdAt   time.Time
+		spec        DecisionSpec
+		state       DecisionState
+		wantAction  Action
+		wantReason  string
+		wantExpiry  time.Time // zero means "do not check"
+		wantRequeue time.Duration
 	}{
 		{
 			name:        "fresh object initialises its expiry window",
@@ -138,11 +138,11 @@ func TestDecide(t *testing.T) {
 			wantRequeue: 30 * time.Minute,
 		},
 		{
-			name:      "no activity ever recorded expires the session",
-			now:       base.Add(30 * time.Minute),
-			createdAt: base,
-			spec:      defaultSpec(),
-			state:     DecisionState{ExpiresAt: ptr(base.Add(30 * time.Minute))},
+			name:       "no activity ever recorded expires the session",
+			now:        base.Add(30 * time.Minute),
+			createdAt:  base,
+			spec:       defaultSpec(),
+			state:      DecisionState{ExpiresAt: ptr(base.Add(30 * time.Minute))},
 			wantAction: ActionExpire,
 			wantReason: ReasonIdleTimeout,
 		},
