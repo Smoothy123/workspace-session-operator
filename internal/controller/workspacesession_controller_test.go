@@ -329,3 +329,64 @@ var _ = Describe("WorkspaceSession lifecycle", func() {
 			"an active session must still die at the hard TTL")
 	})
 })
+
+var _ = Describe("WorkspaceSession deletion", func() {
+	It("tears down children and releases the finalizer", func() {
+		fakeClock.SetTime(startTime)
+		ws := newSession()
+
+		Eventually(func() error {
+			var pod corev1.Pod
+			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ws), &pod)
+		}, timeout, interval).Should(Succeed())
+
+		Eventually(func() bool {
+			return controllerutil.ContainsFinalizer(getSession(ws), workspacev1alpha1.TeardownFinalizer)
+		}, timeout, interval).Should(BeTrue())
+
+		By("deleting the session")
+		Expect(k8sClient.Delete(ctx, getSession(ws))).To(Succeed())
+
+		By("removing the object entirely once teardown completes")
+		Eventually(func() bool {
+			var live workspacev1alpha1.WorkspaceSession
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ws), &live)
+			return apierrors.IsNotFound(err)
+		}, timeout, interval).Should(BeTrue(), "the finalizer must not strand the object")
+
+		By("leaving no Service behind")
+		Eventually(func() bool {
+			var svc corev1.Service
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ws), &svc)
+			return apierrors.IsNotFound(err) || !svc.DeletionTimestamp.IsZero()
+		}, timeout, interval).Should(BeTrue())
+	})
+
+	It("deletes an already-expired session without stranding it", func() {
+		fakeClock.SetTime(startTime)
+		ws := newSession()
+
+		// Same gate as the lifecycle specs: let the first reconcile establish
+		// the expiry window before moving the clock, otherwise Decide sees a nil
+		// ExpiresAt and returns Init rather than Expire.
+		Eventually(func() *metav1.Time {
+			return getSession(ws).Status.ExpiresAt
+		}, timeout, interval).ShouldNot(BeNil())
+
+		fakeClock.SetTime(startTime.Add(31 * time.Minute))
+		nudge(ws)
+
+		Eventually(func() workspacev1alpha1.WorkspaceSessionPhase {
+			return getSession(ws).Status.Phase
+		}, timeout, interval).Should(Equal(workspacev1alpha1.PhaseExpired))
+
+		By("deleting a tombstone whose children are already gone")
+		Expect(k8sClient.Delete(ctx, getSession(ws))).To(Succeed())
+
+		Eventually(func() bool {
+			var live workspacev1alpha1.WorkspaceSession
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ws), &live)
+			return apierrors.IsNotFound(err)
+		}, timeout, interval).Should(BeTrue(), "teardown must be idempotent")
+	})
+})

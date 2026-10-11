@@ -210,12 +210,6 @@ func (r *WorkspaceSessionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// TEMPORARY — replaced in Task 6.
-func (r *WorkspaceSessionReconciler) reconcileDelete(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) (ctrl.Result, error) {
-	controllerutil.RemoveFinalizer(ws, workspacev1alpha1.TeardownFinalizer)
-	return ctrl.Result{}, r.Update(ctx, ws)
-}
-
 // expire tears the session down and records why.
 //
 // The WorkspaceSession object itself survives as a tombstone: `kubectl get ws`
@@ -275,4 +269,87 @@ func (r *WorkspaceSessionReconciler) deleteChildren(ctx context.Context, ws *wor
 		return err
 	}
 	return nil
+}
+
+// reconcileDelete runs ordered teardown behind the finalizer.
+//
+// OwnerReferences would already garbage-collect the Pod and Service, so this
+// finalizer is not what makes cleanup happen. It buys two things GC does not:
+// the Service is withdrawn before the Pod begins terminating, so no request
+// lands on a dying backend; and there is a guaranteed window to mark the object
+// Terminating and emit a final event before it disappears.
+func (r *WorkspaceSessionReconciler) reconcileDelete(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(ws, workspacev1alpha1.TeardownFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	if ws.Status.Phase != workspacev1alpha1.PhaseTerminating {
+		ws.Status.Phase = workspacev1alpha1.PhaseTerminating
+		if err := r.Status().Update(ctx, ws); err != nil && !apierrors.IsConflict(err) {
+			return ctrl.Result{}, fmt.Errorf("marking terminating: %w", err)
+		}
+	}
+
+	if err := r.deleteChildren(ctx, ws); err != nil {
+		return ctrl.Result{}, fmt.Errorf("tearing down children: %w", err)
+	}
+
+	gone, err := r.childrenGone(ctx, ws)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !gone {
+		// Children are still terminating. Come back rather than dropping the
+		// finalizer early, which would let the object vanish mid-teardown.
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
+	r.Recorder.Event(ws, corev1.EventTypeNormal, "SessionTornDown",
+		"Workspace service and pod removed")
+
+	controllerutil.RemoveFinalizer(ws, workspacev1alpha1.TeardownFinalizer)
+	if err := r.Update(ctx, ws); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// childrenGone reports whether both children have been released, meaning each
+// is either absent or already marked for deletion.
+//
+// Accepting "marked for deletion" rather than waiting for the object to vanish
+// is deliberate. Once the API server has accepted the delete, the Service has
+// stopped routing and the Pod is terminating — which is everything the
+// ordering guarantee needs. Waiting for final removal would make the finalizer
+// depend on a kubelet confirming termination, so a session on an unreachable
+// node would strand its WorkspaceSession indefinitely. A finalizer that can
+// deadlock on an unhealthy node is worse than one that releases a moment early.
+//
+// It also means these specs run under envtest, which has no kubelet and no
+// garbage collector: a pod deleted with the default grace period would keep its
+// deletionTimestamp forever.
+func (r *WorkspaceSessionReconciler) childrenGone(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) (bool, error) {
+	key := types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}
+
+	var svc corev1.Service
+	switch err := r.Get(ctx, key, &svc); {
+	case err == nil:
+		if svc.DeletionTimestamp.IsZero() {
+			return false, nil
+		}
+	case !apierrors.IsNotFound(err):
+		return false, err
+	}
+
+	var pod corev1.Pod
+	switch err := r.Get(ctx, key, &pod); {
+	case err == nil:
+		if pod.DeletionTimestamp.IsZero() {
+			return false, nil
+		}
+	case !apierrors.IsNotFound(err):
+		return false, err
+	}
+
+	return true, nil
 }
