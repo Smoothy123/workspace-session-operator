@@ -34,8 +34,8 @@ enforces exactly that.
   loop, no cron. The controller sleeps until the moment a decision is due.
 - On waking: **extends** the session if activity is recent and extensions remain,
   otherwise **tears it down**.
-- A **finalizer** withdraws the Service before deleting the Pod, so no request
-  lands on a terminating backend.
+- A **finalizer** withdraws the Service before deleting the Pod, narrowing the
+  window in which a request reaches a terminating backend.
 - Expired sessions are kept as **tombstones** — `kubectl get ws` still shows what
   ended and why.
 
