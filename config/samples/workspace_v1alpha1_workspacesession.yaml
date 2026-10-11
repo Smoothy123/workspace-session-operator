@@ -1,0 +1,19 @@
+apiVersion: workspace.smoothy.dev/v1alpha1
+kind: WorkspaceSession
+metadata:
+  name: demo
+  namespace: default
+  annotations:
+    # An external session gateway writes this. For the demo, you write it:
+    #   kubectl annotate ws demo \
+    #     workspace.smoothy.dev/last-activity=$(date -u +%FT%TZ) --overwrite
+    workspace.smoothy.dev/last-activity: "2026-01-01T00:00:00Z"
+spec:
+  image: nginx:1.27-alpine
+  port: 8080
+  # Deliberately short so the lifecycle is observable in a live demo rather
+  # than in four hours.
+  idleTimeout: 2m
+  extensionDuration: 2m
+  maxExtensions: 2
+  hardTTL: 10m
