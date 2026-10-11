@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - workspace.smoothy.dev
+  resources:
+  - workspacesessions
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - workspace.smoothy.dev
+  resources:
+  - workspacesessions/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - workspace.smoothy.dev
+  resources:
+  - workspacesessions/status
+  verbs:
+  - get
+  - patch
+  - update
