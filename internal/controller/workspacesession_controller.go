@@ -210,17 +210,69 @@ func (r *WorkspaceSessionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// TEMPORARY — replaced in Task 5.
-func (r *WorkspaceSessionReconciler) syncActivity(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) {
-}
-
-// TEMPORARY — replaced in Task 5.
-func (r *WorkspaceSessionReconciler) expire(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession, reason string) error {
-	return nil
-}
-
 // TEMPORARY — replaced in Task 6.
 func (r *WorkspaceSessionReconciler) reconcileDelete(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(ws, workspacev1alpha1.TeardownFinalizer)
 	return ctrl.Result{}, r.Update(ctx, ws)
+}
+
+// expire tears the session down and records why.
+//
+// The WorkspaceSession object itself survives as a tombstone: `kubectl get ws`
+// then shows which sessions ended and for what reason, which is worth far more
+// when debugging than a resource that silently vanished.
+func (r *WorkspaceSessionReconciler) expire(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession, reason string) error {
+	if err := r.deleteChildren(ctx, ws); err != nil {
+		return fmt.Errorf("deleting children: %w", err)
+	}
+
+	ws.Status.Phase = workspacev1alpha1.PhaseExpired
+	ws.Status.ExpiresAt = &metav1.Time{Time: r.Clock.Now()}
+
+	meta.SetStatusCondition(&ws.Status.Conditions, metav1.Condition{
+		Type:    workspacev1alpha1.ConditionExpired,
+		Status:  metav1.ConditionTrue,
+		Reason:  reason,
+		Message: expiryMessage(reason),
+	})
+	meta.SetStatusCondition(&ws.Status.Conditions, metav1.Condition{
+		Type:    workspacev1alpha1.ConditionReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: "Session has expired",
+	})
+
+	r.Recorder.Eventf(ws, corev1.EventTypeNormal, "SessionExpired",
+		"Session expired: %s", expiryMessage(reason))
+
+	return r.Status().Update(ctx, ws)
+}
+
+func expiryMessage(reason string) string {
+	switch reason {
+	case ReasonIdleTimeout:
+		return "No activity within the idle timeout"
+	case ReasonExtensionsExhausted:
+		return "All permitted extensions have been used"
+	case ReasonHardTTLExceeded:
+		return "Reached the hard TTL ceiling"
+	default:
+		return reason
+	}
+}
+
+// deleteChildren removes the Service before the Pod, so the Service stops
+// routing before the backend begins terminating and no request lands on a
+// dying pod. Both deletes tolerate NotFound so teardown is idempotent.
+func (r *WorkspaceSessionReconciler) deleteChildren(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) error {
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: ws.Name, Namespace: ws.Namespace}}
+	if err := r.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: ws.Name, Namespace: ws.Namespace}}
+	if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	return nil
 }

@@ -1,0 +1,90 @@
+package controller
+
+import (
+	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	workspacev1alpha1 "github.com/Smoothy123/workspace-session-operator/api/v1alpha1"
+)
+
+func withAnnotation(v string) *workspacev1alpha1.WorkspaceSession {
+	ws := &workspacev1alpha1.WorkspaceSession{}
+	if v != "" {
+		ws.Annotations = map[string]string{workspacev1alpha1.LastActivityAnnotation: v}
+	}
+	return ws
+}
+
+func TestParseActivity(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     string
+		wantFound bool
+		wantErr   bool
+		wantTime  time.Time
+	}{
+		{"absent annotation", "", false, false, time.Time{}},
+		{
+			"valid RFC3339",
+			"2026-01-01T12:00:00Z",
+			true, false,
+			time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		},
+		{"malformed value", "not-a-timestamp", true, true, time.Time{}},
+		{"empty value", "", false, false, time.Time{}},
+		{"unix seconds instead of RFC3339", "1767268800", true, true, time.Time{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found, err := parseActivity(withAnnotation(tc.value))
+
+			if found != tc.wantFound {
+				t.Fatalf("found: got %v, want %v", found, tc.wantFound)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err: got %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && tc.wantFound && !got.Equal(tc.wantTime) {
+				t.Errorf("time: got %v, want %v", got, tc.wantTime)
+			}
+		})
+	}
+}
+
+// TestSyncActivityIsMonotonic pins Review Focus item 2: a stale gateway write
+// carrying an older timestamp must not move lastActivityAt backwards.
+func TestSyncActivityIsMonotonic(t *testing.T) {
+	newer := time.Date(2026, 1, 1, 12, 30, 0, 0, time.UTC)
+	older := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	ws := withAnnotation(older.Format(time.RFC3339))
+	ws.Status.LastActivityAt = &metav1.Time{Time: newer}
+
+	changed := applyActivity(ws, older)
+
+	if changed {
+		t.Error("applyActivity reported a change for an older timestamp")
+	}
+	if !ws.Status.LastActivityAt.Time.Equal(newer) {
+		t.Errorf("lastActivityAt moved backwards: got %v, want %v",
+			ws.Status.LastActivityAt.Time, newer)
+	}
+}
+
+func TestSyncActivityAdvances(t *testing.T) {
+	older := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 1, 1, 12, 30, 0, 0, time.UTC)
+
+	ws := withAnnotation(newer.Format(time.RFC3339))
+	ws.Status.LastActivityAt = &metav1.Time{Time: older}
+
+	if changed := applyActivity(ws, newer); !changed {
+		t.Error("applyActivity did not report a change for a newer timestamp")
+	}
+	if !ws.Status.LastActivityAt.Time.Equal(newer) {
+		t.Errorf("got %v, want %v", ws.Status.LastActivityAt.Time, newer)
+	}
+}
