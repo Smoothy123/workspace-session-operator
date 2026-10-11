@@ -184,8 +184,9 @@ project.
 ```
 1. Get object; NotFound -> done.
 2. deletionTimestamp set?
-     finalizer present -> teardown(Service, then Pod); once both gone, remove
-                          finalizer. Children still terminating -> requeue.
+     finalizer present -> set phase=Terminating; teardown(Service, then Pod);
+                          once both gone, remove finalizer. Children still
+                          terminating -> requeue.
      -> return
 3. Ensure finalizer present.
 4. phase == Expired -> return, no requeue.   (terminal, absorbing)
@@ -308,6 +309,12 @@ Table-driven, no cluster. Cases:
 4. Fake-clock advance with no activity expires the session: children deleted,
    object retained with `phase: Expired` and an `Expired` condition.
 5. Deleting the object removes children and the finalizer; the object goes away.
+
+**Triggering clock-dependent tests.** Advancing a fake clock does not by itself
+wake the controller: the pending `RequeueAfter` was scheduled against real time.
+Tests whose assertions depend on the clock moving must advance it and then
+enqueue a reconcile explicitly, by writing a no-op label to the object. Test 3
+gets this for free from its annotation write; test 4 does it deliberately.
 
 `setup-envtest` fetches control-plane binaries; the Makefile wires this up.
 
