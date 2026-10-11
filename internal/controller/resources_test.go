@@ -24,11 +24,16 @@ import (
 	workspacev1alpha1 "github.com/Smoothy123/workspace-session-operator/api/v1alpha1"
 )
 
+const (
+	sampleName = "demo"
+	sampleNS   = "dev"
+)
+
 func sampleSession() *workspacev1alpha1.WorkspaceSession {
 	return &workspacev1alpha1.WorkspaceSession{
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "dev"},
+		ObjectMeta: metav1.ObjectMeta{Name: sampleName, Namespace: sampleNS},
 		Spec: workspacev1alpha1.WorkspaceSessionSpec{
-			Image: "nginx:1.27-alpine",
+			Image: testImage,
 			Port:  8080,
 		},
 	}
@@ -37,14 +42,14 @@ func sampleSession() *workspacev1alpha1.WorkspaceSession {
 func TestBuildPodUsesSpecImageAndPort(t *testing.T) {
 	pod := buildPod(sampleSession())
 
-	if pod.Name != "demo" || pod.Namespace != "dev" {
+	if pod.Name != sampleName || pod.Namespace != sampleNS {
 		t.Fatalf("got %s/%s, want dev/demo", pod.Namespace, pod.Name)
 	}
 	if len(pod.Spec.Containers) != 1 {
 		t.Fatalf("got %d containers, want 1", len(pod.Spec.Containers))
 	}
 	c := pod.Spec.Containers[0]
-	if c.Image != "nginx:1.27-alpine" {
+	if c.Image != testImage {
 		t.Errorf("image: got %q", c.Image)
 	}
 	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != 8080 {
@@ -54,7 +59,7 @@ func TestBuildPodUsesSpecImageAndPort(t *testing.T) {
 
 func TestBuildPodCarriesSelectorLabels(t *testing.T) {
 	pod := buildPod(sampleSession())
-	if pod.Labels["workspace.smoothy.dev/session"] != "demo" {
+	if pod.Labels["workspace.smoothy.dev/session"] != sampleName {
 		t.Errorf("labels: got %+v", pod.Labels)
 	}
 }
@@ -76,7 +81,7 @@ func TestBuildServiceSelectsThePod(t *testing.T) {
 
 func TestEndpointForIsClusterDNS(t *testing.T) {
 	got := endpointFor(sampleSession())
-	want := "demo.dev.svc.cluster.local:8080"
+	want := sampleName + "." + sampleNS + ".svc.cluster.local:8080"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

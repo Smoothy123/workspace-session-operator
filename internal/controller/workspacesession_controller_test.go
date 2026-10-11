@@ -36,6 +36,9 @@ import (
 const (
 	timeout  = time.Second * 15
 	interval = time.Millisecond * 250
+
+	testNamespace = "default"
+	testImage     = "nginx:1.27-alpine"
 )
 
 var sessionCounter int
@@ -46,10 +49,10 @@ func newSession() *workspacev1alpha1.WorkspaceSession {
 	ws := &workspacev1alpha1.WorkspaceSession{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("session-%d", sessionCounter),
-			Namespace: "default",
+			Namespace: testNamespace,
 		},
 		Spec: workspacev1alpha1.WorkspaceSessionSpec{
-			Image:             "nginx:1.27-alpine",
+			Image:             testImage,
 			Port:              8080,
 			IdleTimeout:       metav1.Duration{Duration: 30 * time.Minute},
 			ExtensionDuration: metav1.Duration{Duration: 30 * time.Minute},
@@ -78,7 +81,7 @@ var _ = Describe("WorkspaceSession creation", func() {
 			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ws), &pod)
 		}, timeout, interval).Should(Succeed())
 
-		Expect(pod.Spec.Containers[0].Image).To(Equal("nginx:1.27-alpine"))
+		Expect(pod.Spec.Containers[0].Image).To(Equal(testImage))
 		Expect(metav1.IsControlledBy(&pod, getSession(ws))).To(BeTrue())
 
 		By("creating the Service with a controller reference")
@@ -101,7 +104,7 @@ var _ = Describe("WorkspaceSession creation", func() {
 		live := getSession(ws)
 		Expect(live.Status.ExpiresAt.Time).To(BeTemporally("~", startTime.Add(30*time.Minute), time.Second))
 		Expect(live.Status.ExtensionsUsed).To(BeZero())
-		Expect(live.Status.Endpoint).To(Equal(fmt.Sprintf("%s.default.svc.cluster.local:8080", ws.Name)))
+		Expect(live.Status.Endpoint).To(Equal(fmt.Sprintf("%s."+testNamespace+".svc.cluster.local:8080", ws.Name)))
 	})
 
 	It("moves from Pending to Running when the Pod becomes Ready", func() {
@@ -304,10 +307,10 @@ var _ = Describe("WorkspaceSession lifecycle", func() {
 		ws := &workspacev1alpha1.WorkspaceSession{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      fmt.Sprintf("session-%d", sessionCounter),
-				Namespace: "default",
+				Namespace: testNamespace,
 			},
 			Spec: workspacev1alpha1.WorkspaceSessionSpec{
-				Image:             "nginx:1.27-alpine",
+				Image:             testImage,
 				Port:              8080,
 				IdleTimeout:       metav1.Duration{Duration: 10 * time.Minute},
 				ExtensionDuration: metav1.Duration{Duration: 10 * time.Minute},
@@ -422,7 +425,7 @@ var _ = Describe("WorkspaceSession name collisions", func() {
 
 		By("planting unrelated objects that happen to share the session's name")
 		foreignSvc := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 			Spec: corev1.ServiceSpec{
 				Selector: map[string]string{"app": "production"},
 				Ports:    []corev1.ServicePort{{Name: "pg", Port: 9999}},
@@ -431,7 +434,7 @@ var _ = Describe("WorkspaceSession name collisions", func() {
 		Expect(k8sClient.Create(ctx, foreignSvc)).To(Succeed())
 
 		foreignPod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{Name: "db", Image: "postgres:16"}},
 			},
@@ -442,9 +445,9 @@ var _ = Describe("WorkspaceSession name collisions", func() {
 
 		By("creating a session with the colliding name")
 		ws := &workspacev1alpha1.WorkspaceSession{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 			Spec: workspacev1alpha1.WorkspaceSessionSpec{
-				Image:             "nginx:1.27-alpine",
+				Image:             testImage,
 				Port:              8080,
 				IdleTimeout:       metav1.Duration{Duration: 30 * time.Minute},
 				ExtensionDuration: metav1.Duration{Duration: 30 * time.Minute},
@@ -516,7 +519,7 @@ var _ = Describe("WorkspaceSession already past its ceiling", func() {
 
 		sessionCounter++
 		name := fmt.Sprintf("session-%d", sessionCounter)
-		key := client.ObjectKey{Name: name, Namespace: "default"}
+		key := client.ObjectKey{Name: name, Namespace: testNamespace}
 
 		// The Pod would exist for only milliseconds, so watch for it from before
 		// the session is created. Polling after the fact cannot see the window.
@@ -546,9 +549,9 @@ var _ = Describe("WorkspaceSession already past its ceiling", func() {
 		<-watching
 
 		ws := &workspacev1alpha1.WorkspaceSession{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 			Spec: workspacev1alpha1.WorkspaceSessionSpec{
-				Image:             "nginx:1.27-alpine",
+				Image:             testImage,
 				Port:              8080,
 				IdleTimeout:       metav1.Duration{Duration: 30 * time.Minute},
 				ExtensionDuration: metav1.Duration{Duration: 30 * time.Minute},
@@ -582,9 +585,9 @@ var _ = Describe("WorkspaceSession event honesty", func() {
 		sessionCounter++
 		name := fmt.Sprintf("session-%d", sessionCounter)
 		ws := &workspacev1alpha1.WorkspaceSession{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 			Spec: workspacev1alpha1.WorkspaceSessionSpec{
-				Image:             "nginx:1.27-alpine",
+				Image:             testImage,
 				Port:              8080,
 				IdleTimeout:       metav1.Duration{Duration: 30 * time.Minute},
 				ExtensionDuration: metav1.Duration{Duration: 30 * time.Minute},
@@ -596,7 +599,7 @@ var _ = Describe("WorkspaceSession event honesty", func() {
 
 		By("racing the first reconcile with concurrent metadata writes")
 		var wg sync.WaitGroup
-		for i := 0; i < 25; i++ {
+		for i := range 25 {
 			wg.Add(1)
 			go func(n int) {
 				defer GinkgoRecover()
@@ -621,7 +624,7 @@ var _ = Describe("WorkspaceSession event honesty", func() {
 		By("counting SessionCreated announcements, including event aggregation")
 		Consistently(func() int32 {
 			var events corev1.EventList
-			if err := k8sClient.List(ctx, &events, client.InNamespace("default")); err != nil {
+			if err := k8sClient.List(ctx, &events, client.InNamespace(testNamespace)); err != nil {
 				return -1
 			}
 			var total int32

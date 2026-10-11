@@ -24,8 +24,6 @@ import (
 // keeps every case deterministic.
 var base = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-func ptr(t time.Time) *time.Time { return &t }
-
 func defaultSpec() DecisionSpec {
 	return DecisionSpec{
 		IdleTimeout:       30 * time.Minute,
@@ -77,7 +75,7 @@ func TestDecide(t *testing.T) {
 			now:         base.Add(10 * time.Minute),
 			createdAt:   base,
 			spec:        defaultSpec(),
-			state:       DecisionState{ExpiresAt: ptr(base.Add(30 * time.Minute))},
+			state:       DecisionState{ExpiresAt: new(base.Add(30 * time.Minute))},
 			wantAction:  ActionWait,
 			wantRequeue: 20 * time.Minute,
 		},
@@ -87,8 +85,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(30 * time.Minute)),
-				LastActivityAt: ptr(base.Add(25 * time.Minute)),
+				ExpiresAt:      new(base.Add(30 * time.Minute)),
+				LastActivityAt: new(base.Add(25 * time.Minute)),
 				ExtensionsUsed: 1,
 			},
 			wantAction:  ActionExtend,
@@ -106,8 +104,8 @@ func TestDecide(t *testing.T) {
 				HardTTL:           time.Hour,
 			},
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(50 * time.Minute)),
-				LastActivityAt: ptr(base.Add(45 * time.Minute)),
+				ExpiresAt:      new(base.Add(50 * time.Minute)),
+				LastActivityAt: new(base.Add(45 * time.Minute)),
 			},
 			wantAction:  ActionExtend,
 			wantExpiry:  base.Add(60 * time.Minute),
@@ -119,8 +117,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(30 * time.Minute)),
-				LastActivityAt: ptr(base.Add(5 * time.Minute)),
+				ExpiresAt:      new(base.Add(30 * time.Minute)),
+				LastActivityAt: new(base.Add(5 * time.Minute)),
 			},
 			wantAction: ActionExpire,
 			wantReason: ReasonIdleTimeout,
@@ -133,8 +131,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(30 * time.Minute)),
-				LastActivityAt: ptr(base),
+				ExpiresAt:      new(base.Add(30 * time.Minute)),
+				LastActivityAt: new(base),
 			},
 			wantAction: ActionExpire,
 			wantReason: ReasonIdleTimeout,
@@ -145,8 +143,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(30 * time.Minute)),
-				LastActivityAt: ptr(base.Add(time.Second)),
+				ExpiresAt:      new(base.Add(30 * time.Minute)),
+				LastActivityAt: new(base.Add(time.Second)),
 			},
 			wantAction:  ActionExtend,
 			wantExpiry:  base.Add(60 * time.Minute),
@@ -157,7 +155,7 @@ func TestDecide(t *testing.T) {
 			now:        base.Add(30 * time.Minute),
 			createdAt:  base,
 			spec:       defaultSpec(),
-			state:      DecisionState{ExpiresAt: ptr(base.Add(30 * time.Minute))},
+			state:      DecisionState{ExpiresAt: new(base.Add(30 * time.Minute))},
 			wantAction: ActionExpire,
 			wantReason: ReasonIdleTimeout,
 		},
@@ -167,8 +165,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(30 * time.Minute)),
-				LastActivityAt: ptr(base.Add(29 * time.Minute)),
+				ExpiresAt:      new(base.Add(30 * time.Minute)),
+				LastActivityAt: new(base.Add(29 * time.Minute)),
 				ExtensionsUsed: 3,
 			},
 			wantAction: ActionExpire,
@@ -185,8 +183,8 @@ func TestDecide(t *testing.T) {
 				HardTTL:           4 * time.Hour,
 			},
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(30 * time.Minute)),
-				LastActivityAt: ptr(base.Add(29 * time.Minute)),
+				ExpiresAt:      new(base.Add(30 * time.Minute)),
+				LastActivityAt: new(base.Add(29 * time.Minute)),
 			},
 			wantAction: ActionExpire,
 			wantReason: ReasonExtensionsExhausted,
@@ -197,8 +195,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(4 * time.Hour)),
-				LastActivityAt: ptr(base.Add(4*time.Hour - time.Minute)),
+				ExpiresAt:      new(base.Add(4 * time.Hour)),
+				LastActivityAt: new(base.Add(4*time.Hour - time.Minute)),
 				ExtensionsUsed: 0,
 			},
 			wantAction: ActionExpire,
@@ -210,8 +208,8 @@ func TestDecide(t *testing.T) {
 			createdAt: base,
 			spec:      defaultSpec(),
 			state: DecisionState{
-				ExpiresAt:      ptr(base.Add(4 * time.Hour)),
-				LastActivityAt: ptr(base.Add(99 * time.Hour)),
+				ExpiresAt:      new(base.Add(4 * time.Hour)),
+				LastActivityAt: new(base.Add(99 * time.Hour)),
 			},
 			wantAction: ActionExpire,
 			wantReason: ReasonHardTTLExceeded,
@@ -273,7 +271,7 @@ func TestDecide(t *testing.T) {
 // terminal: the controller must not schedule another wake-up for it.
 func TestDecideExpireCarriesNoRequeue(t *testing.T) {
 	got := Decide(base.Add(5*time.Hour), base, defaultSpec(), DecisionState{
-		ExpiresAt: ptr(base.Add(30 * time.Minute)),
+		ExpiresAt: new(base.Add(30 * time.Minute)),
 	})
 	if got.Action != ActionExpire {
 		t.Fatalf("action: got %q, want %q", got.Action, ActionExpire)

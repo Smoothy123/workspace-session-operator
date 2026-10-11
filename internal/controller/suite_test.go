@@ -96,7 +96,7 @@ var _ = BeforeSuite(func() {
 	Expect((&WorkspaceSessionReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("test"),
+		Recorder: mgr.GetEventRecorder("test"),
 		Clock:    fakeClock,
 	}).SetupWithManager(mgr)).To(Succeed())
 

@@ -99,7 +99,7 @@ func (r *WorkspaceSessionReconciler) syncActivity(ctx context.Context, ws *works
 	}
 	if err != nil {
 		logf.FromContext(ctx).Error(err, "ignoring malformed activity annotation")
-		r.Recorder.Eventf(ws, corev1.EventTypeWarning, "InvalidActivityAnnotation",
+		r.Recorder.Eventf(ws, nil, corev1.EventTypeWarning, "InvalidActivityAnnotation", "Ignoring",
 			"Ignoring %s: %v", workspacev1alpha1.LastActivityAnnotation, err)
 		return
 	}
@@ -107,7 +107,7 @@ func (r *WorkspaceSessionReconciler) syncActivity(ctx context.Context, ws *works
 	if now := r.Clock.Now(); !activityIsPlausible(t, now) {
 		logf.FromContext(ctx).Info("ignoring implausible future-dated activity",
 			"supplied", t, "controllerClock", now)
-		r.Recorder.Eventf(ws, corev1.EventTypeWarning, "ActivityClockSkew",
+		r.Recorder.Eventf(ws, nil, corev1.EventTypeWarning, "ActivityClockSkew", "Ignoring",
 			"Ignoring activity timestamp %s: it is ahead of the controller clock (%s)",
 			t.Format(time.RFC3339), now.Format(time.RFC3339))
 		return

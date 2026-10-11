@@ -27,12 +27,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/recorder"
 
 	workspacev1alpha1 "github.com/Smoothy123/workspace-session-operator/api/v1alpha1"
 )
@@ -42,7 +42,7 @@ import (
 type WorkspaceSessionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder recorder.EventRecorder
 	// Clock is injectable so tests can fast-forward instead of sleeping.
 	Clock clock.PassiveClock
 }
@@ -115,18 +115,18 @@ func (r *WorkspaceSessionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	case ActionInit:
 		ws.Status.ExpiresAt = &metav1.Time{Time: d.NewExpiry}
 		announce = func() {
-			r.Recorder.Eventf(&ws, corev1.EventTypeNormal, "SessionCreated",
+			r.Recorder.Eventf(&ws, nil, corev1.EventTypeNormal, "SessionCreated", "Starting",
 				"Workspace session started, expires at %s", d.NewExpiry.Format(time.RFC3339))
 		}
 
 	case ActionExtend:
 		ws.Status.ExpiresAt = &metav1.Time{Time: d.NewExpiry}
 		ws.Status.ExtensionsUsed++
-		used, max := ws.Status.ExtensionsUsed, ws.Spec.MaxExtensions
+		used, maxExt := ws.Status.ExtensionsUsed, ws.Spec.MaxExtensions
 		announce = func() {
-			r.Recorder.Eventf(&ws, corev1.EventTypeNormal, "SessionExtended",
+			r.Recorder.Eventf(&ws, nil, corev1.EventTypeNormal, "SessionExtended", "Extending",
 				"Extended to %s (%d of %d extensions used)",
-				d.NewExpiry.Format(time.RFC3339), used, max)
+				d.NewExpiry.Format(time.RFC3339), used, maxExt)
 		}
 
 	case ActionWait:
@@ -234,7 +234,8 @@ func (r *WorkspaceSessionReconciler) reportForeignChild(ctx context.Context, ws 
 		Reason:  workspacev1alpha1.ReasonChildNotOwned,
 		Message: cause.Error(),
 	})
-	r.Recorder.Event(ws, corev1.EventTypeWarning, workspacev1alpha1.ReasonChildNotOwned, cause.Error())
+	r.Recorder.Eventf(ws, nil, corev1.EventTypeWarning, workspacev1alpha1.ReasonChildNotOwned,
+		"Refusing", "%s", cause.Error())
 
 	if err := r.Status().Update(ctx, ws); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reporting foreign child: %w", err)
@@ -334,7 +335,7 @@ func (r *WorkspaceSessionReconciler) expire(ctx context.Context, ws *workspacev1
 	if err := r.Status().Update(ctx, ws); err != nil {
 		return err
 	}
-	r.Recorder.Eventf(ws, corev1.EventTypeNormal, "SessionExpired",
+	r.Recorder.Eventf(ws, nil, corev1.EventTypeNormal, "SessionExpired", "Expiring",
 		"Session expired: %s", expiryMessage(reason))
 	return nil
 }
@@ -430,7 +431,7 @@ func (r *WorkspaceSessionReconciler) reconcileDelete(ctx context.Context, ws *wo
 	if err := r.Update(ctx, ws); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
-	r.Recorder.Event(ws, corev1.EventTypeNormal, "SessionTornDown",
+	r.Recorder.Eventf(ws, nil, corev1.EventTypeNormal, "SessionTornDown", "TearingDown",
 		"Workspace service and pod removed")
 	return ctrl.Result{}, nil
 }

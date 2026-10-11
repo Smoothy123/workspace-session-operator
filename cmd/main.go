@@ -186,7 +186,7 @@ func main() {
 	if err := (&controller.WorkspaceSessionReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("workspacesession-controller"),
+		Recorder: mgr.GetEventRecorder("workspacesession-controller"),
 		Clock:    clock.RealClock{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workspacesession")
