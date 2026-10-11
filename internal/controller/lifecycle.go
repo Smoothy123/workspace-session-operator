@@ -40,9 +40,14 @@ const (
 	ReasonHardTTLExceeded     = "HardTTLExceeded"
 )
 
-// MinRequeue floors every requeue. A hard-TTL-clamped expiry can land exactly on
-// now, and a zero-duration requeue would spin the work queue hot. One second of
-// imprecision on teardown is a good trade.
+// MinRequeue floors every requeue.
+//
+// A hard-TTL-clamped expiry can land exactly on now, yielding a zero-length
+// window. That is worse than it sounds: controller-runtime treats a Result with
+// RequeueAfter == 0 and no error as "done" and forgets the item entirely, so the
+// session would never be woken again and would sit past its ceiling until some
+// unrelated event happened to re-enqueue it. The floor guarantees a wake-up. One
+// second of imprecision on teardown is a good trade.
 const MinRequeue = time.Second
 
 // DecisionSpec is the lifetime policy, lifted out of the CRD into plain Go

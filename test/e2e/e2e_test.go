@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -279,6 +280,78 @@ var _ = Describe("Manager", Ordered, func() {
 		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
 		//    strings.ToLower(<Kind>),
 		// ))
+	})
+
+	Context("WorkspaceSession lifecycle", func() {
+		const sessionName = "e2e-session"
+
+		It("reconciles a session into a Pod and Service, and lets Kubernetes reclaim them", func() {
+			By("creating a WorkspaceSession")
+			manifest := fmt.Sprintf(`apiVersion: workspace.smoothy.dev/v1alpha1
+kind: WorkspaceSession
+metadata:
+  name: %s
+  namespace: default
+spec:
+  image: nginx:1.27-alpine
+  port: 8080
+  idleTimeout: 1h
+  extensionDuration: 1h
+  maxExtensions: 1
+  hardTTL: 2h
+`, sessionName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the WorkspaceSession")
+
+			By("waiting for the session to report Running")
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "get", "workspacesession", sessionName,
+					"-n", "default", "-o", "jsonpath={.status.phase}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("Running"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("confirming the Pod and Service exist and are owned by the session")
+			for _, kind := range []string{"pod", "service"} {
+				out, err := utils.Run(exec.Command("kubectl", "get", kind, sessionName, "-n", "default",
+					"-o", "jsonpath={.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}"))
+				Expect(err).NotTo(HaveOccurred(), "Failed to read %s ownerReferences", kind)
+				Expect(out).To(Equal("WorkspaceSession/"+sessionName),
+					"%s is not owned by the session", kind)
+			}
+
+			By("confirming the reported endpoint matches the Service")
+			out, err := utils.Run(exec.Command("kubectl", "get", "workspacesession", sessionName,
+				"-n", "default", "-o", "jsonpath={.status.endpoint}"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(Equal(fmt.Sprintf("%s.default.svc.cluster.local:8080", sessionName)))
+
+			By("removing the finalizer so teardown cannot do the cleaning")
+			// With the finalizer gone, nothing in this operator deletes the children.
+			// Anything reclaimed from here on was reclaimed by Kubernetes garbage
+			// collection acting on the ownerReferences — which envtest cannot
+			// exercise, because it runs no kube-controller-manager.
+			_, err = utils.Run(exec.Command("kubectl", "patch", "workspacesession", sessionName,
+				"-n", "default", "--type", "merge", "-p", `{"metadata":{"finalizers":null}}`))
+			Expect(err).NotTo(HaveOccurred(), "Failed to strip the finalizer")
+
+			By("deleting the session")
+			_, err = utils.Run(exec.Command("kubectl", "delete", "workspacesession", sessionName,
+				"-n", "default", "--wait=true"))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("observing garbage collection reclaim both children")
+			Eventually(func(g Gomega) {
+				for _, kind := range []string{"pod", "service"} {
+					out, err := utils.Run(exec.Command("kubectl", "get", kind, sessionName,
+						"-n", "default", "--ignore-not-found", "-o", "name"))
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(out).To(BeEmpty(), "%s was not garbage-collected", kind)
+				}
+			}, 2*time.Minute, time.Second).Should(Succeed())
+		})
 	})
 })
 

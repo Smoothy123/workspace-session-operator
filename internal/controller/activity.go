@@ -61,6 +61,31 @@ func applyActivity(ws *workspacev1alpha1.WorkspaceSession, t time.Time) bool {
 	return true
 }
 
+// maxActivitySkew is how far ahead of the controller's clock a gateway-supplied
+// timestamp may sit before it is treated as bogus rather than as clock jitter.
+// A minute absorbs ordinary NTP drift between two machines without believing a
+// writer whose clock is hours out.
+const maxActivitySkew = time.Minute
+
+// activityIsPlausible reports whether a supplied timestamp can be believed.
+//
+// Activity arrives from an external writer, so its clock is not ours to trust.
+// A timestamp hours in the future makes a session look permanently active:
+// every idle check sees activity "moments ago", so it extends all the way to
+// maxExtensions having never been used — exactly what the idle timeout exists
+// to prevent.
+//
+// Implausible timestamps are REJECTED rather than clamped to now. Clamping
+// looks gentler but is worse: the annotation is a level, not an edge, so the
+// controller re-reads the same value on every reconcile. A clamped value would
+// be refreshed to "now" each time, and a single bogus write would keep the
+// session alive forever — the very failure being guarded against. Refusing to
+// believe the timestamp leaves lastActivityAt where it was, and the session
+// expires on schedule.
+func activityIsPlausible(t, now time.Time) bool {
+	return !t.After(now.Add(maxActivitySkew))
+}
+
 // syncActivity mirrors the annotation into status.
 //
 // A malformed annotation is logged and surfaced as a Warning event, then
@@ -78,5 +103,15 @@ func (r *WorkspaceSessionReconciler) syncActivity(ctx context.Context, ws *works
 			"Ignoring %s: %v", workspacev1alpha1.LastActivityAnnotation, err)
 		return
 	}
+
+	if now := r.Clock.Now(); !activityIsPlausible(t, now) {
+		logf.FromContext(ctx).Info("ignoring implausible future-dated activity",
+			"supplied", t, "controllerClock", now)
+		r.Recorder.Eventf(ws, corev1.EventTypeWarning, "ActivityClockSkew",
+			"Ignoring activity timestamp %s: it is ahead of the controller clock (%s)",
+			t.Format(time.RFC3339), now.Format(time.RFC3339))
+		return
+	}
+
 	applyActivity(ws, t)
 }

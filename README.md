@@ -84,18 +84,19 @@ four hours.
 The following is real output from a kind cluster, not an illustration.
 
 ```
+
 ==> Creating the session
 workspacesession.workspace.smoothy.dev/demo created
-    pod ready after 2s
+    pod ready after 13s
 NAME   PHASE     ENDPOINT                              EXPIRES                EXT   AGE
-demo   Running   demo.default.svc.cluster.local:8080   2026-10-11T05:35:58Z   0     1s
+demo   Running   demo.default.svc.cluster.local:8080   2026-10-11T06:29:09Z   0     13s
 
 ==> Children created by the operator
 NAME       READY   STATUS    RESTARTS   AGE
-pod/demo   1/1     Running   0          2s
+pod/demo   1/1     Running   0          13s
 
 NAME           TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
-service/demo   ClusterIP   10.96.247.93   <none>        8080/TCP   2s
+service/demo   ClusterIP   10.96.45.143   <none>        8080/TCP   13s
 
 ==> Each child is owned by the session, so Kubernetes can garbage-collect it
 WorkspaceSession/demo controller=true
@@ -104,34 +105,42 @@ WorkspaceSession/demo controller=true
 workspacesession.workspace.smoothy.dev/demo annotated
 
 ==> Waiting out the idle window to watch the session extend
-    extended after 113s
+    extended after 102s
 NAME   PHASE     ENDPOINT                              EXPIRES                EXT   AGE
-demo   Running   demo.default.svc.cluster.local:8080   2026-10-11T05:37:58Z   1     2m
+demo   Running   demo.default.svc.cluster.local:8080   2026-10-11T06:31:09Z   1     2m
 
 ==> Going quiet so the session expires
     expired after 114s
-NAME   PHASE     ENDPOINT                              EXPIRES                EXT   AGE
-demo   Expired   demo.default.svc.cluster.local:8080   2026-10-11T05:37:58Z   1     4m
+NAME   PHASE     ENDPOINT   EXPIRES                EXT   AGE
+demo   Expired              2026-10-11T06:31:09Z   1     4m
 
 ==> Children are gone, the tombstone remains with the reason
     children removed after 2s
 No resources found in default namespace.
   Conditions:
-    Last Transition Time:  2026-10-11T05:37:58Z
+    Last Transition Time:  2026-10-11T06:31:09Z
     Message:               Session has expired
     Reason:                IdleTimeout
     Status:                False
     Type:                  Ready
-    Last Transition Time:  2026-10-11T05:37:58Z
+    Last Transition Time:  2026-10-11T06:31:09Z
     Message:               No activity within the idle timeout
     Reason:                IdleTimeout
     Status:                True
     Type:                  Expired
-  Endpoint:                demo.default.svc.cluster.local:8080
-  Expires At:              2026-10-11T05:37:58Z
+  Expires At:              2026-10-11T06:31:09Z
   Extensions Used:         1
-  Last Activity At:        2026-10-11T05:34:00Z
+  Last Activity At:        2026-10-11T06:27:22Z
   Phase:                   Expired
+Events:
+  Type    Reason           Age   From                         Message
+  ----    ------           ----  ----                         -------
+  Normal  SessionCreated   4m1s  workspacesession-controller  Workspace session started, expires at 2026-10-11T11:59:09+05:30
+  Normal  SessionExtended  2m1s  workspacesession-controller  Extended to 2026-10-11T12:01:09+05:30 (1 of 2 extensions used)
+  Normal  SessionExpired   1s    workspacesession-controller  Session expired: No activity within the idle timeout
+
+==> Cleaning up
+workspacesession.workspace.smoothy.dev "demo" deleted from default namespace
 ```
 
 ### Keeping a session alive
@@ -253,8 +262,12 @@ would be inaccurate.
 
 It buys two things garbage collection does not:
 
-1. **Ordering.** The Service is withdrawn before the Pod is deleted, so no
-   request is routed to a backend that is already terminating.
+1. **Ordering.** The Service delete is issued before the Pod delete. Be precise
+   about what that is worth: the two API calls are microseconds apart, and
+   EndpointSlice removal still has to propagate through the endpoint controller
+   and every kube-proxy. This *narrows* the window in which a request reaches a
+   terminating backend; it does not close it. Closing it would need a real drain
+   wait between the two deletes.
 2. **A terminal status window.** Phase, conditions and a final event are written
    before the object disappears.
 
@@ -290,7 +303,12 @@ Two layers, deliberately:
   fake clock, so expiry and extension paths are exercised without waiting real
   time. Note that envtest runs only kube-apiserver and etcd — there is no
   kube-controller-manager, so ownerReference garbage collection is *not*
-  exercised there. That is verified against kind instead.
+  exercised there.
+- **End-to-end tests** run against a real kind cluster with the manager deployed.
+  One spec covers garbage collection specifically: it creates a session, strips
+  the finalizer so the operator's own teardown cannot do the cleaning, deletes
+  the session, and asserts Kubernetes reclaims both children on the
+  ownerReferences alone.
 
 Because the fake clock does not wake the controller on its own (a pending
 `RequeueAfter` was scheduled against real time), clock-dependent specs advance

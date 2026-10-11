@@ -103,3 +103,31 @@ func TestSyncActivityAdvances(t *testing.T) {
 		t.Errorf("got %v, want %v", ws.Status.LastActivityAt.Time, newer)
 	}
 }
+
+// TestActivityIsPlausible pins the guard against a gateway whose clock runs
+// ahead. Activity is supplied by an external writer, so its clock is not ours
+// to trust; a timestamp hours in the future makes a session look permanently
+// busy. A minute of slack absorbs ordinary NTP drift.
+func TestActivityIsPlausible(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		in   time.Time
+		want bool
+	}{
+		{"hours ahead is not believed", now.Add(72 * time.Hour), false},
+		{"well past the skew allowance is not believed", now.Add(2 * time.Minute), false},
+		{"ordinary NTP drift is believed", now.Add(30 * time.Second), true},
+		{"exactly now is believed", now, true},
+		{"the past is always believed", now.Add(-5 * time.Minute), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := activityIsPlausible(tc.in, now); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -82,42 +83,71 @@ func (r *WorkspaceSessionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	r.syncActivity(ctx, &ws)
 
-	pod, err := r.ensurePod(ctx, &ws)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring pod: %w", err)
-	}
-	if err := r.ensureService(ctx, &ws); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring service: %w", err)
-	}
-	ws.Status.Endpoint = endpointFor(&ws)
-
+	// Decide before touching children. Ensuring them first means a session that
+	// is already past its ceiling still gets a Pod scheduled and an image pull
+	// started, only to be deleted microseconds later on the same reconcile.
 	d := Decide(r.Clock.Now(), ws.CreationTimestamp.Time, decisionSpec(&ws), decisionState(&ws))
 	log.V(1).Info("decided", "action", d.Action, "reason", d.Reason, "expiry", d.NewExpiry)
 
-	switch d.Action {
-	case ActionExpire:
+	if d.Action == ActionExpire {
 		return ctrl.Result{}, r.expire(ctx, &ws, d.Reason)
+	}
 
+	pod, err := r.ensurePod(ctx, &ws)
+	if err == nil {
+		err = r.ensureService(ctx, &ws)
+	}
+	if err != nil {
+		if errors.Is(err, errForeignChild) {
+			return r.reportForeignChild(ctx, &ws, err)
+		}
+		return ctrl.Result{}, fmt.Errorf("ensuring children: %w", err)
+	}
+	ws.Status.Endpoint = endpointFor(&ws)
+
+	// An event is a claim that something happened, so it is held until the write
+	// that makes it true succeeds. Emitting first means a status update lost to a
+	// conflict still announces a start or an extension that was then discarded —
+	// and announces it again on every retry.
+	var announce func()
+
+	switch d.Action {
 	case ActionInit:
 		ws.Status.ExpiresAt = &metav1.Time{Time: d.NewExpiry}
-		r.Recorder.Eventf(&ws, corev1.EventTypeNormal, "SessionCreated",
-			"Workspace session started, expires at %s", d.NewExpiry.Format(time.RFC3339))
+		announce = func() {
+			r.Recorder.Eventf(&ws, corev1.EventTypeNormal, "SessionCreated",
+				"Workspace session started, expires at %s", d.NewExpiry.Format(time.RFC3339))
+		}
 
 	case ActionExtend:
 		ws.Status.ExpiresAt = &metav1.Time{Time: d.NewExpiry}
 		ws.Status.ExtensionsUsed++
-		r.Recorder.Eventf(&ws, corev1.EventTypeNormal, "SessionExtended",
-			"Extended to %s (%d of %d extensions used)",
-			d.NewExpiry.Format(time.RFC3339), ws.Status.ExtensionsUsed, ws.Spec.MaxExtensions)
+		used, max := ws.Status.ExtensionsUsed, ws.Spec.MaxExtensions
+		announce = func() {
+			r.Recorder.Eventf(&ws, corev1.EventTypeNormal, "SessionExtended",
+				"Extended to %s (%d of %d extensions used)",
+				d.NewExpiry.Format(time.RFC3339), used, max)
+		}
 
 	case ActionWait:
 		// Nothing to write beyond the readiness-derived phase below.
+
+	case ActionExpire:
+		// Handled above, before any child is touched.
 	}
 
 	r.applyReadiness(&ws, pod)
 
 	if err := r.Status().Update(ctx, &ws); err != nil {
+		// Deliberately no in-place conflict retry here. Returning the error
+		// requeues the whole reconcile, which re-reads the object and re-runs
+		// Decide against fresh state. Re-applying a decision computed from the
+		// stale read could double-count an extension that another writer had
+		// already recorded.
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+	}
+	if announce != nil {
+		announce()
 	}
 	return ctrl.Result{RequeueAfter: d.RequeueAfter}, nil
 }
@@ -145,12 +175,26 @@ func (r *WorkspaceSessionReconciler) applyReadiness(ws *workspacev1alpha1.Worksp
 	meta.SetStatusCondition(&ws.Status.Conditions, cond)
 }
 
+// errForeignChild means a Pod or Service with this session's name already
+// exists and is controlled by something else.
+//
+// Adopting it would make the session report healthy while backed by a workload
+// it never created, and would then destroy that workload on expiry. Refusing is
+// the only safe answer: a controller that can be made to delete resources it
+// does not own by choosing a colliding name is destructive by default.
+var errForeignChild = errors.New("a resource with this name exists and is not owned by this session")
+
 // ensurePod creates the workspace Pod if absent and returns the live object.
 // It is idempotent: a Pod deleted out from under a live session is recreated.
 func (r *WorkspaceSessionReconciler) ensurePod(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) (*corev1.Pod, error) {
+	key := types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}
+
 	var pod corev1.Pod
-	err := r.Get(ctx, types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &pod)
+	err := r.Get(ctx, key, &pod)
 	if err == nil {
+		if !metav1.IsControlledBy(&pod, ws) {
+			return nil, fmt.Errorf("pod %s: %w", key, errForeignChild)
+		}
 		return &pod, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -162,19 +206,52 @@ func (r *WorkspaceSessionReconciler) ensurePod(ctx context.Context, ws *workspac
 		return nil, err
 	}
 	if err := r.Create(ctx, desired); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return &pod, nil
+		if !apierrors.IsAlreadyExists(err) {
+			return nil, err
 		}
-		return nil, err
+		// The cache had not caught up. Re-read rather than returning the
+		// zero-valued Pod from the failed Get above, which would be reported as
+		// not-ready and flap the session's phase back to Pending.
+		if err := r.Get(ctx, key, &pod); err != nil {
+			return nil, err
+		}
+		if !metav1.IsControlledBy(&pod, ws) {
+			return nil, fmt.Errorf("pod %s: %w", key, errForeignChild)
+		}
+		return &pod, nil
 	}
 	return desired, nil
 }
 
+// reportForeignChild records the collision and stops, rather than failing the
+// reconcile in a hot retry loop. The condition tells the operator exactly what
+// is wrong; only a human renaming or removing the conflicting object fixes it.
+func (r *WorkspaceSessionReconciler) reportForeignChild(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession, cause error) (ctrl.Result, error) {
+	ws.Status.Phase = workspacev1alpha1.PhasePending
+	meta.SetStatusCondition(&ws.Status.Conditions, metav1.Condition{
+		Type:    workspacev1alpha1.ConditionReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  workspacev1alpha1.ReasonChildNotOwned,
+		Message: cause.Error(),
+	})
+	r.Recorder.Event(ws, corev1.EventTypeWarning, workspacev1alpha1.ReasonChildNotOwned, cause.Error())
+
+	if err := r.Status().Update(ctx, ws); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reporting foreign child: %w", err)
+	}
+	return ctrl.Result{RequeueAfter: time.Minute}, nil
+}
+
 // ensureService creates the workspace Service if absent.
 func (r *WorkspaceSessionReconciler) ensureService(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) error {
+	key := types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}
+
 	var svc corev1.Service
-	err := r.Get(ctx, types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &svc)
+	err := r.Get(ctx, key, &svc)
 	if err == nil {
+		if !metav1.IsControlledBy(&svc, ws) {
+			return fmt.Errorf("service %s: %w", key, errForeignChild)
+		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -237,6 +314,9 @@ func (r *WorkspaceSessionReconciler) expire(ctx context.Context, ws *workspacev1
 
 	ws.Status.Phase = workspacev1alpha1.PhaseExpired
 	ws.Status.ExpiresAt = &metav1.Time{Time: r.Clock.Now()}
+	// The Service backing this endpoint has just been deleted, so continuing to
+	// advertise the address would point callers at nothing.
+	ws.Status.Endpoint = ""
 
 	meta.SetStatusCondition(&ws.Status.Conditions, metav1.Condition{
 		Type:    workspacev1alpha1.ConditionExpired,
@@ -251,10 +331,12 @@ func (r *WorkspaceSessionReconciler) expire(ctx context.Context, ws *workspacev1
 		Message: "Session has expired",
 	})
 
+	if err := r.Status().Update(ctx, ws); err != nil {
+		return err
+	}
 	r.Recorder.Eventf(ws, corev1.EventTypeNormal, "SessionExpired",
 		"Session expired: %s", expiryMessage(reason))
-
-	return r.Status().Update(ctx, ws)
+	return nil
 }
 
 func expiryMessage(reason string) string {
@@ -270,17 +352,42 @@ func expiryMessage(reason string) string {
 	}
 }
 
-// deleteChildren removes the Service before the Pod, so the Service stops
-// routing before the backend begins terminating and no request lands on a
-// dying pod. Both deletes tolerate NotFound so teardown is idempotent.
+// deleteChildren issues the Service delete before the Pod delete.
+//
+// That ordering narrows, but does not close, the window in which a request
+// reaches a terminating backend: EndpointSlice removal still has to propagate
+// through the endpoint controller and every kube-proxy, which usually takes
+// longer than the two API calls are apart. Closing it properly would need a
+// drain wait between the deletes. Both tolerate NotFound so teardown is
+// idempotent.
+//
+// Each delete is guarded twice: the object must be controlled by this session,
+// and the delete carries a UID precondition so it cannot race into removing a
+// replacement that appeared under the same name in between.
 func (r *WorkspaceSessionReconciler) deleteChildren(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) error {
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: ws.Name, Namespace: ws.Namespace}}
-	if err := r.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
+	key := types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}
+
+	var svc corev1.Service
+	switch err := r.Get(ctx, key, &svc); {
+	case err == nil:
+		if metav1.IsControlledBy(&svc, ws) {
+			if err := r.Delete(ctx, &svc, client.Preconditions{UID: &svc.UID}); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+	case !apierrors.IsNotFound(err):
 		return err
 	}
 
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: ws.Name, Namespace: ws.Namespace}}
-	if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+	var pod corev1.Pod
+	switch err := r.Get(ctx, key, &pod); {
+	case err == nil:
+		if metav1.IsControlledBy(&pod, ws) {
+			if err := r.Delete(ctx, &pod, client.Preconditions{UID: &pod.UID}); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+	case !apierrors.IsNotFound(err):
 		return err
 	}
 	return nil
@@ -290,9 +397,9 @@ func (r *WorkspaceSessionReconciler) deleteChildren(ctx context.Context, ws *wor
 //
 // OwnerReferences would already garbage-collect the Pod and Service, so this
 // finalizer is not what makes cleanup happen. It buys two things GC does not:
-// the Service is withdrawn before the Pod begins terminating, so no request
-// lands on a dying backend; and there is a guaranteed window to mark the object
-// Terminating and emit a final event before it disappears.
+// the Service delete is issued first, which narrows the window in which a
+// request reaches a terminating backend; and there is a guaranteed window to
+// mark the object Terminating and emit a final event before it disappears.
 func (r *WorkspaceSessionReconciler) reconcileDelete(ctx context.Context, ws *workspacev1alpha1.WorkspaceSession) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(ws, workspacev1alpha1.TeardownFinalizer) {
 		return ctrl.Result{}, nil
@@ -319,13 +426,12 @@ func (r *WorkspaceSessionReconciler) reconcileDelete(ctx context.Context, ws *wo
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	r.Recorder.Event(ws, corev1.EventTypeNormal, "SessionTornDown",
-		"Workspace service and pod removed")
-
 	controllerutil.RemoveFinalizer(ws, workspacev1alpha1.TeardownFinalizer)
 	if err := r.Update(ctx, ws); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	r.Recorder.Event(ws, corev1.EventTypeNormal, "SessionTornDown",
+		"Workspace service and pod removed")
 	return ctrl.Result{}, nil
 }
 
@@ -349,7 +455,9 @@ func (r *WorkspaceSessionReconciler) childrenGone(ctx context.Context, ws *works
 	var svc corev1.Service
 	switch err := r.Get(ctx, key, &svc); {
 	case err == nil:
-		if svc.DeletionTimestamp.IsZero() {
+		// An object we never owned is not ours to wait on; blocking on it would
+		// strand this session behind an unrelated workload's lifetime.
+		if metav1.IsControlledBy(&svc, ws) && svc.DeletionTimestamp.IsZero() {
 			return false, nil
 		}
 	case !apierrors.IsNotFound(err):
@@ -359,7 +467,7 @@ func (r *WorkspaceSessionReconciler) childrenGone(ctx context.Context, ws *works
 	var pod corev1.Pod
 	switch err := r.Get(ctx, key, &pod); {
 	case err == nil:
-		if pod.DeletionTimestamp.IsZero() {
+		if metav1.IsControlledBy(&pod, ws) && pod.DeletionTimestamp.IsZero() {
 			return false, nil
 		}
 	case !apierrors.IsNotFound(err):

@@ -28,9 +28,10 @@ const (
 	// traffic observation and lifecycle management.
 	LastActivityAnnotation = "workspace.smoothy.dev/last-activity"
 
-	// TeardownFinalizer guarantees the Service is withdrawn before the Pod is
-	// deleted, and that terminal status is written before the object vanishes.
-	// Note that ownerReferences, not this finalizer, perform garbage collection.
+	// TeardownFinalizer orders teardown — the Service delete is issued before
+	// the Pod delete — and guarantees terminal status is written before the
+	// object vanishes. Note that ownerReferences, not this finalizer, perform
+	// garbage collection.
 	TeardownFinalizer = "workspace.smoothy.dev/teardown"
 )
 
@@ -47,6 +48,11 @@ const (
 const (
 	ReasonPodReady    = "PodReady"
 	ReasonPodNotReady = "PodNotReady"
+	// ReasonChildNotOwned means a Pod or Service with this session's name
+	// already exists and is controlled by something else. The session refuses
+	// to adopt it rather than take over — and later destroy — a workload it
+	// did not create.
+	ReasonChildNotOwned = "ChildNotOwned"
 )
 
 // WorkspaceSessionPhase summarises where a session sits in its lifecycle.
