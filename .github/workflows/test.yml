@@ -27,3 +27,18 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Verify generated code and formatting are up to date
+        # `make test` runs manifests, generate, fmt and vet as prerequisites.
+        # Those targets REWRITE files rather than failing, so without this check
+        # stale deepcopy code, a stale CRD, or unformatted source would sail
+        # through CI and only surface as confusing drift between the Go types
+        # and the installed CRD.
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated code or formatting is stale. Run 'make manifests generate fmt' and commit the result."
+            exit 1
+          fi
+
+      - name: Build manager binary
+        run: make build
